@@ -1,0 +1,456 @@
+package com.dulichso.bookingapi.service;
+
+import com.dulichso.bookingapi.dto.PlaceDetailDto;
+import com.dulichso.bookingapi.dto.PlaceSummaryDto;
+import com.dulichso.bookingapi.dto.RoomTypeDto;
+import com.dulichso.bookingapi.entity.Place;
+import com.dulichso.bookingapi.entity.RoomType;
+import com.dulichso.bookingapi.entity.enums.CategoryKind;
+import com.dulichso.bookingapi.repository.PlaceAmenityRepository;
+import com.dulichso.bookingapi.repository.PlaceMediaRepository;
+import com.dulichso.bookingapi.repository.PlaceRepository;
+import com.dulichso.bookingapi.repository.PlaceSpecification;
+import com.dulichso.bookingapi.repository.RoomTypeMediaRepository;
+import com.dulichso.bookingapi.repository.RoomTypeRepository;
+import com.dulichso.bookingapi.repository.RoomInventoryDayRepository;
+import com.dulichso.bookingapi.entity.keys.RoomInventoryDayId;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class PublicPlaceService {
+
+    private final PlaceRepository placeRepository;
+    private final PlaceMediaRepository placeMediaRepository;
+    private final RoomTypeRepository roomTypeRepository;
+    private final RoomTypeMediaRepository roomTypeMediaRepository;
+    private final PlaceAmenityRepository placeAmenityRepository;
+    private final com.dulichso.bookingapi.repository.PlaceContactRepository placeContactRepository;
+    private final com.dulichso.bookingapi.repository.ReviewRepository reviewRepository;
+    private final com.dulichso.bookingapi.repository.RegionRepository regionRepository;
+    private final RoomInventoryDayRepository roomInventoryDayRepository;
+    private final com.dulichso.bookingapi.repository.RoomAmenityRepository roomAmenityRepository;
+
+    /**
+     * Danh mục tiện ích cho bộ lọc tìm kiếm: chỉ trả các tiện ích đang có ở ít nhất một chỗ nghỉ công khai,
+     * để khách không chọn phải tiện ích luôn cho 0 kết quả. Mã trả về khớp tham số {@code amenities} của /places.
+     */
+    @Transactional(readOnly = true)
+    public List<com.dulichso.bookingapi.dto.PublicAmenityDto> getAmenitiesInUse(CategoryKind kind) {
+        CategoryKind target = kind == null ? CategoryKind.HOMESTAY : kind;
+        Map<String, com.dulichso.bookingapi.entity.Amenity> byCode = new java.util.LinkedHashMap<>();
+        placeAmenityRepository.findAmenitiesInUseByKind(target).forEach(a -> byCode.putIfAbsent(a.getCode(), a));
+        roomAmenityRepository.findAmenitiesInUseByKind(target).forEach(a -> byCode.putIfAbsent(a.getCode(), a));
+        return byCode.values().stream()
+                .sorted(java.util.Comparator.comparing(com.dulichso.bookingapi.entity.Amenity::getSortOrder)
+                        .thenComparing(com.dulichso.bookingapi.entity.Amenity::getName))
+                .map(a -> new com.dulichso.bookingapi.dto.PublicAmenityDto(a.getCode(), a.getName(), a.getScope()))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<com.dulichso.bookingapi.dto.PublicRegionHierarchyDto> getPublicRegions() {
+        List<com.dulichso.bookingapi.entity.Region> allRegions = regionRepository.findByIsActiveTrue();
+        if (allRegions == null || allRegions.isEmpty()) {
+            allRegions = regionRepository.findAll();
+        }
+
+        // Nhóm theo parentId để dễ duyệt cây 3 level: 1 (Tỉnh) -> 2 (Huyện) -> 3 (Xã)
+        Map<Long, List<com.dulichso.bookingapi.entity.Region>> childrenByParentId = new java.util.HashMap<>();
+        for (com.dulichso.bookingapi.entity.Region r : allRegions) {
+            Long pId = r.getParent() != null ? r.getParent().getId() : null;
+            childrenByParentId.computeIfAbsent(pId, k -> new ArrayList<>()).add(r);
+        }
+
+        // Tìm các Province (level 1 hoặc parent_id == null)
+        List<com.dulichso.bookingapi.entity.Region> provinces = allRegions.stream()
+                .filter(r -> (r.getLevel() != null && r.getLevel() == 1) || r.getParent() == null)
+                .collect(Collectors.toList());
+
+        List<com.dulichso.bookingapi.dto.PublicRegionHierarchyDto> result = new ArrayList<>();
+
+        if (!provinces.isEmpty()) {
+            for (com.dulichso.bookingapi.entity.Region prov : provinces) {
+                List<com.dulichso.bookingapi.entity.Region> districts = childrenByParentId.getOrDefault(prov.getId(), Collections.emptyList());
+                List<com.dulichso.bookingapi.dto.PublicRegionHierarchyDto.DistrictItem> districtItems = new ArrayList<>();
+
+                for (com.dulichso.bookingapi.entity.Region dist : districts) {
+                    List<com.dulichso.bookingapi.entity.Region> wards = childrenByParentId.getOrDefault(dist.getId(), Collections.emptyList());
+                    List<com.dulichso.bookingapi.dto.PublicRegionHierarchyDto.WardItem> wardItems = wards.stream()
+                            .map(w -> new com.dulichso.bookingapi.dto.PublicRegionHierarchyDto.WardItem(w.getId(), w.getName()))
+                            .collect(Collectors.toList());
+
+                    districtItems.add(new com.dulichso.bookingapi.dto.PublicRegionHierarchyDto.DistrictItem(
+                            dist.getId(),
+                            dist.getName(),
+                            wardItems
+                    ));
+                }
+
+                result.add(new com.dulichso.bookingapi.dto.PublicRegionHierarchyDto(
+                        prov.getId(),
+                        prov.getName(),
+                        districtItems
+                ));
+            }
+        } else {
+            // Fallback nếu không có phân cấp
+            result.add(new com.dulichso.bookingapi.dto.PublicRegionHierarchyDto(
+                    1L,
+                    "Yên Bái",
+                    Collections.emptyList()
+            ));
+        }
+
+        return result;
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PlaceSummaryDto> getPlaces(CategoryKind kind, BigDecimal minPrice, BigDecimal maxPrice, BigDecimal minRating, List<String> amenities, LocalDate checkIn, LocalDate checkOut, Pageable pageable) {
+        return getPlaces(kind, minPrice, maxPrice, minRating, amenities, checkIn, checkOut, null, null, null, null, null, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PlaceSummaryDto> getPlaces(CategoryKind kind, BigDecimal minPrice, BigDecimal maxPrice, BigDecimal minRating, List<String> amenities, LocalDate checkIn, LocalDate checkOut, String province, String ward, List<Long> attractionIds, Pageable pageable) {
+        return getPlaces(kind, minPrice, maxPrice, minRating, amenities, checkIn, checkOut, province, null, ward, attractionIds, null, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PlaceSummaryDto> getPlaces(CategoryKind kind, BigDecimal minPrice, BigDecimal maxPrice, BigDecimal minRating, List<String> amenities, LocalDate checkIn, LocalDate checkOut, String province, String district, String ward, List<Long> attractionIds, String keyword, Pageable pageable) {
+        return getPlaces(kind, minPrice, maxPrice, minRating, amenities, checkIn, checkOut, province, district, ward, attractionIds, keyword, null, pageable);
+    }
+
+
+    @Transactional(readOnly = true)
+    public Page<PlaceSummaryDto> getPlaces(CategoryKind kind, BigDecimal minPrice, BigDecimal maxPrice, BigDecimal minRating, List<String> amenities, LocalDate checkIn, LocalDate checkOut, String province, String district, String ward, List<Long> attractionIds, String keyword, String needs, Pageable pageable) {
+        validateFilters(minPrice, maxPrice, checkIn, checkOut);
+        Specification<Place> spec = PlaceSpecification.filterPublicPlaces(kind, minPrice, maxPrice, minRating, amenities, checkIn, checkOut, province, district, ward, attractionIds, keyword, needs);
+        Pageable listingPageable = PageRequest.of(pageable.getPageNumber(), 12, normalizeSort(pageable.getSort()));
+        
+        Page<Place> placesPage = placeRepository.findAll(spec, listingPageable);
+        
+        List<Long> placeIds = placesPage.getContent().stream().map(Place::getId).collect(Collectors.toList());
+        Map<Long, List<PlaceDetailDto.ContactItemDto>> contactsByPlaceId = new java.util.HashMap<>();
+        Map<Long, List<String>> amenitiesByPlaceId = new java.util.HashMap<>();
+        Map<Long, BigDecimal> listingPriceByPlaceId = new java.util.HashMap<>();
+        Map<Long, List<RoomType>> activeRoomsByPlaceId = new java.util.HashMap<>();
+        if (!placeIds.isEmpty()) {
+            List<com.dulichso.bookingapi.entity.PlaceContact> contacts = placeContactRepository.findByPlaceIdInAndIsPublicTrue(placeIds);
+            for (com.dulichso.bookingapi.entity.PlaceContact c : contacts) {
+                contactsByPlaceId.computeIfAbsent(c.getPlace().getId(), k -> new ArrayList<>())
+                        .add(PlaceDetailDto.ContactItemDto.builder()
+                                .id(c.getId())
+                                .channel(c.getChannel())
+                                .value(c.getValue())
+                                .isPublic(c.getIsPublic())
+                                .sortOrder(c.getSortOrder())
+                                .build());
+            }
+
+            List<com.dulichso.bookingapi.entity.PlaceAmenity> placeAmenities = placeAmenityRepository.findByPlaceIdInWithAmenity(placeIds);
+            for (com.dulichso.bookingapi.entity.PlaceAmenity pa : placeAmenities) {
+                if (pa.getAmenity() != null && pa.getAmenity().getName() != null) {
+                    amenitiesByPlaceId.computeIfAbsent(pa.getPlace().getId(), k -> new ArrayList<>())
+                            .add(pa.getAmenity().getName());
+                }
+            }
+
+            for (RoomType roomType : roomTypeRepository.findByPlaceIdInAndStatus(placeIds, "ACTIVE")) {
+                activeRoomsByPlaceId.computeIfAbsent(roomType.getPlace().getId(), k -> new ArrayList<>()).add(roomType);
+                if (roomType.getBasePrice() == null || roomType.getBasePrice().signum() < 0) continue;
+                listingPriceByPlaceId.merge(roomType.getPlace().getId(), roomType.getBasePrice(), BigDecimal::min);
+            }
+        }
+
+        return placesPage.map(p -> {
+            List<String> mediaUrls = placeMediaRepository.findPublicUrlsByPlaceId(p.getId());
+            String coverUrl = (mediaUrls != null && !mediaUrls.isEmpty()) ? mediaUrls.get(0) : null;
+            if (coverUrl == null && p.getAttributes() != null && p.getAttributes().containsKey("coverImageUrl")) {
+                coverUrl = (String) p.getAttributes().get("coverImageUrl");
+            }
+
+            PlaceSummaryDto dto = new PlaceSummaryDto(
+                    p.getId(),
+                    p.getSlug(),
+                    p.getName(),
+                    p.getRegion() != null ? p.getRegion().getName() : null,
+                    coverUrl,
+                    p.getDescription(),
+                    listingPriceByPlaceId.getOrDefault(p.getId(), p.getPriceRefMin()),
+                    p.getRatingAvg(),
+                    p.getRatingCount(),
+                    p.getAttributes(),
+                    p.getKind(),
+                    p.getLatitude(),
+                    p.getLongitude(),
+                    p.getAddress()
+            );
+
+            dto.setSuitableDateStart(p.getSuitableDateStart());
+            dto.setSuitableDateEnd(p.getSuitableDateEnd());
+            dto.setNeeds(p.getNeeds());
+            dto.setGoogleRating(p.getGoogleRating());
+            dto.setOperationStatus(p.getOperationStatus());
+            Object statusReason = p.getAttributes() == null ? null : p.getAttributes().get("operationStatusReason");
+            dto.setOperationStatusReason(statusReason instanceof String ? (String) statusReason : null);
+            dto.setAvailableForSelectedDates(isAvailableForSelection(
+                    p, activeRoomsByPlaceId.getOrDefault(p.getId(), Collections.emptyList()), checkIn, checkOut));
+            dto.setContacts(contactsByPlaceId.getOrDefault(p.getId(), Collections.emptyList()));
+            dto.setAmenities(amenitiesByPlaceId.getOrDefault(p.getId(), Collections.emptyList()));
+            if (p.getAttributes() != null && p.getAttributes().containsKey("tagBadge")) {
+                dto.setTagBadge((String) p.getAttributes().get("tagBadge"));
+            }
+            return dto;
+        });
+    }
+
+    private boolean isAvailableForSelection(Place place, List<RoomType> rooms, LocalDate checkIn,
+                                             LocalDate checkOut) {
+        if (place.getOperationStatus() != com.dulichso.bookingapi.entity.enums.PlaceOperationStatus.OPERATING) return false;
+        if (checkIn == null || checkOut == null) return true;
+        return rooms.stream().anyMatch(room -> {
+            if (room.getTotalRoomCount() == null || room.getTotalRoomCount() < 1) return false;
+            // Loại phòng chưa có giá không đặt được (RoomCalendarService báo "Loại phòng chưa có giá").
+            if (room.getBasePrice() == null) return false;
+            for (LocalDate date = checkIn; date.isBefore(checkOut); date = date.plusDays(1)) {
+                var inventory = roomInventoryDayRepository.findById(new RoomInventoryDayId(room.getId(), date));
+                if (inventory.isPresent()) {
+                    var day = inventory.get();
+                    int occupied = (day.getHeldRooms() == null ? 0 : day.getHeldRooms())
+                            + (day.getConfirmedRooms() == null ? 0 : day.getConfirmedRooms());
+                    if (day.getTotalRooms() == null || Boolean.TRUE.equals(day.getStopSell()) || day.getTotalRooms() - occupied < 1) return false;
+                }
+            }
+            return true;
+        });
+    }
+
+    private void validateFilters(BigDecimal minPrice, BigDecimal maxPrice, LocalDate checkIn, LocalDate checkOut) {
+        if (minPrice != null && minPrice.signum() < 0) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Giá từ không được âm");
+        }
+        if (maxPrice != null && maxPrice.signum() < 0) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Giá đến không được âm");
+        }
+        if (minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Giá từ không được lớn hơn Giá đến");
+        }
+        if (checkOut != null && checkIn == null) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Phải chọn Check-in trước khi chọn Check-out");
+        }
+        if (checkIn != null && checkOut != null && !checkOut.isAfter(checkIn)) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "Check-out phải sau Check-in");
+        }
+    }
+
+    private Sort normalizeSort(Sort requested) {
+        if (requested == null || requested.isUnsorted()) {
+            return Sort.by(Sort.Order.desc("ratingAvg"), Sort.Order.desc("ratingCount"), Sort.Order.asc("id"));
+        }
+        Sort.Order first = requested.stream().findFirst().orElse(null);
+        if (first == null) return Sort.by(Sort.Order.desc("ratingAvg"), Sort.Order.asc("id"));
+        String property = switch (first.getProperty()) {
+            case "price_asc", "priceRefMin" -> "priceRefMin";
+            case "price_desc" -> "priceRefMin";
+            case "rating_desc", "ratingAvg" -> "ratingAvg";
+            default -> "ratingAvg";
+        };
+        Sort.Direction direction = "price_desc".equals(first.getProperty()) ? Sort.Direction.DESC : first.getDirection();
+        return Sort.by(new Sort.Order(direction, property), new Sort.Order(Sort.Direction.ASC, "id"));
+    }
+
+    @Transactional(readOnly = true)
+    public PlaceDetailDto getPlaceDetail(Long id) {
+        Place place = placeRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Place not found with id: " + id));
+        
+        // 1. Lấy danh sách ảnh thật từ place_media JOIN media_asset (Cover đứng đầu)
+        List<String> images = placeMediaRepository.findPublicUrlsByPlaceId(place.getId());
+        if (images == null) {
+            images = new ArrayList<>();
+        }
+        if (images.isEmpty() && place.getAttributes() != null && place.getAttributes().containsKey("coverImageUrl")) {
+            images.add((String) place.getAttributes().get("coverImageUrl"));
+        }
+
+        // 2. Lấy tiện ích từ place_amenity JOIN amenity
+        List<String> amenityNames = placeAmenityRepository.findAmenityNamesByPlaceId(place.getId());
+        if (amenityNames == null) {
+            amenityNames = Collections.emptyList();
+        }
+
+        // 3. Lấy danh sách phòng và ảnh từng phòng từ room_type JOIN room_type_media
+        List<RoomType> roomTypes = roomTypeRepository.findByPlaceId(place.getId());
+        List<RoomTypeDto> roomDtos = roomTypes.stream().map(rt -> {
+            List<String> roomImages = roomTypeMediaRepository.findPublicUrlsByRoomTypeId(rt.getId());
+            return RoomTypeDto.builder()
+                    .id(rt.getId())
+                    .name(rt.getName())
+                    .description(rt.getDescription())
+                    .maxOccupancy(rt.getMaxOccupancy())
+                    .totalRoomCount(rt.getTotalRoomCount())
+                    .areaSqm(rt.getAreaSqm())
+                    .basePrice(rt.getBasePrice())
+                    .weekendPrice(rt.getWeekendPrice())
+                    .images(roomImages != null ? roomImages : new ArrayList<>())
+                    .build();
+        }).collect(Collectors.toList());
+        
+        // 4. Lấy danh sách contacts liên hệ (SĐT, Zalo, TikTok, Facebook,...)
+        List<com.dulichso.bookingapi.entity.PlaceContact> contactEntities = placeContactRepository.findByPlaceIdAndIsPublicTrue(place.getId());
+        List<PlaceDetailDto.ContactItemDto> contactDtos = contactEntities.stream().map(c -> PlaceDetailDto.ContactItemDto.builder()
+                .id(c.getId())
+                .channel(c.getChannel())
+                .value(c.getValue())
+                .isPublic(c.getIsPublic())
+                .sortOrder(c.getSortOrder())
+                .build()
+        ).collect(Collectors.toList());
+
+        return PlaceDetailDto.builder()
+                .id(place.getId())
+                .name(place.getName())
+                .description(place.getDescription())
+                .kind(place.getKind())
+                .needs(place.getNeeds())
+                .address(place.getAddress())
+                .latitude(place.getLatitude())
+                .longitude(place.getLongitude())
+                .priceRefMin(place.getPriceRefMin())
+                .priceRefMax(place.getPriceRefMax())
+                .ratingAvg(place.getRatingAvg())
+                .ratingCount(place.getRatingCount())
+                .googleRating(place.getGoogleRating())
+                .attributes(place.getAttributes())
+                
+                .suitableDateStart(place.getSuitableDateStart())
+                .suitableDateEnd(place.getSuitableDateEnd())
+                .images(images)
+                .amenities(amenityNames)
+                .rooms(roomDtos)
+                .contacts(contactDtos)
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public List<com.dulichso.bookingapi.dto.NearbyPlaceDto> getNearbyPlaces(Long id, double radiusInKm) {
+        Place place = placeRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Place not found with id: " + id));
+
+        if (place.getLatitude() == null || place.getLongitude() == null) {
+            return new ArrayList<>();
+        }
+
+        List<com.dulichso.bookingapi.repository.NearbyPlaceProjection> projections = 
+            placeRepository.findNearbyPlaces(place.getLatitude(), place.getLongitude(), radiusInKm, id, 10);
+
+        List<Long> placeIds = projections.stream().map(com.dulichso.bookingapi.repository.NearbyPlaceProjection::getId).collect(Collectors.toList());
+        Map<Long, List<PlaceDetailDto.ContactItemDto>> contactsByPlaceId = new java.util.HashMap<>();
+        if (!placeIds.isEmpty()) {
+            List<com.dulichso.bookingapi.entity.PlaceContact> contacts = placeContactRepository.findByPlaceIdInAndIsPublicTrue(placeIds);
+            for (com.dulichso.bookingapi.entity.PlaceContact c : contacts) {
+                contactsByPlaceId.computeIfAbsent(c.getPlace().getId(), k -> new ArrayList<>())
+                        .add(PlaceDetailDto.ContactItemDto.builder()
+                                .id(c.getId())
+                                .channel(c.getChannel())
+                                .value(c.getValue())
+                                .isPublic(c.getIsPublic())
+                                .sortOrder(c.getSortOrder())
+                                .build());
+            }
+        }
+
+        return projections.stream().map(p -> com.dulichso.bookingapi.dto.NearbyPlaceDto.builder()
+                .id(p.getId())
+                .name(p.getName())
+                .description(p.getDescription())
+                .imageUrl(p.getImageUrl())
+                .kind(com.dulichso.bookingapi.entity.enums.CategoryKind.valueOf(p.getKind()))
+                .needs(p.getNeeds())
+                .distance(p.getDistance())
+                .latitude(p.getLatitude())
+                .longitude(p.getLongitude())
+                .address(p.getAddress())
+                .contacts(contactsByPlaceId.getOrDefault(p.getId(), Collections.emptyList()))
+                .build()
+        ).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<PlaceSummaryDto> getRegionalDestinations(Long placeId, int limit) {
+        Place place = placeRepository.findById(placeId)
+                .orElseThrow(() -> new RuntimeException("Place not found with id: " + placeId));
+
+        Long regionId = place.getRegion() != null ? place.getRegion().getId() : null;
+        List<Place> destinations = placeRepository.findRegionalDestinations(placeId, regionId, limit > 0 ? limit : 4);
+        
+        // Nếu cùng region ít hơn 4 điểm, tìm mở rộng không giới hạn region
+        if (destinations.size() < 4) {
+            destinations = placeRepository.findRegionalDestinations(placeId, null, 4);
+        }
+
+        return destinations.stream().map(p -> {
+            List<String> images = placeMediaRepository.findPublicUrlsByPlaceId(p.getId());
+            String coverImage = (images != null && !images.isEmpty()) ? images.get(0) : 
+                (p.getAttributes() != null && p.getAttributes().containsKey("coverImageUrl") ? (String) p.getAttributes().get("coverImageUrl") : null);
+
+            return PlaceSummaryDto.builder()
+                    .id(p.getId())
+                    .slug(p.getSlug())
+                    .name(p.getName())
+                    .kind(p.getKind())
+                    .needs(p.getNeeds())
+                    .categoryName(p.getCategory() != null ? p.getCategory().getName() : null)
+                    .regionName(p.getRegion() != null ? p.getRegion().getName() : null)
+                    .address(p.getAddress())
+                    .latitude(p.getLatitude())
+                    .longitude(p.getLongitude())
+                    .coverImageUrl(coverImage)
+                    .ratingAvg(p.getRatingAvg())
+                    .ratingCount(p.getRatingCount())
+                    .googleRating(p.getGoogleRating())
+                    .priceRefMin(p.getPriceRefMin())
+                    .priceRefMax(p.getPriceRefMax())
+                    .priceUnitNote(p.getPriceUnitNote())
+                    
+                    .suitableDateStart(p.getSuitableDateStart())
+                    .suitableDateEnd(p.getSuitableDateEnd())
+                    .build();
+        }).collect(Collectors.toList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<com.dulichso.bookingapi.dto.ReviewDto> getPlaceReviews(Long placeId) {
+        List<com.dulichso.bookingapi.entity.Review> reviews = 
+            reviewRepository.findByPlaceIdAndStatusWithBooking(placeId, com.dulichso.bookingapi.entity.enums.ReviewStatus.VISIBLE);
+
+        return reviews.stream().map(r -> com.dulichso.bookingapi.dto.ReviewDto.builder()
+                .id(r.getId())
+                .placeId(r.getPlace().getId())
+                .rating(r.getRating())
+                .content(r.getContent())
+                .images(r.getImages())
+                .guestName(r.getBooking() != null ? r.getBooking().getGuestName() : "Khách du lịch")
+                .createdAt(r.getCreatedAt())
+                .editableUntil(r.getEditableUntil())
+                .build()
+        ).collect(Collectors.toList());
+    }
+}

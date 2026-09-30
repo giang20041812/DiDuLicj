@@ -1,0 +1,56 @@
+import type { PlaceNeeds } from './homestay';
+export type { PlaceNeeds } from './homestay';
+
+export type CategoryKind = 
+  | 'ATTRACTION' 
+  | 'HOMESTAY' 
+  | 'RESTAURANT' 
+  | 'CUISINE'
+  | 'PHOTO'
+  | 'RENTAL'
+  | 'TRANSPORT' 
+  | 'SERVICE'
+  | 'CULTURE';
+
+export interface CategoryDto {
+  id: number;
+  kind: CategoryKind;
+  needs?: PlaceNeeds;
+  slug: string;
+  name: string;
+  description: string;
+}
+
+export interface PlaceSummaryDto {
+  id: number;
+  slug: string;
+  name: string;
+  regionName: string;
+  coverImageUrl: string;
+  description: string;
+  priceRefMin: number;
+  ratingAvg: number;
+  ratingCount: number;
+  /** Điểm Google Maps (0-5) từ dữ liệu đã xác thực. */
+  googleRating?: number | null;
+  attributesJson: string;
+  kind: CategoryKind;
+  priceUnitNote?: string;
+  suitableDateStart?: string;
+  suitableDateEnd?: string;
+  
+  // Virtual fields enriched by backend
+  tagBadge?: string;
+  statsText?: string;
+  amenities?: string[];
+  highlights?: string[];
+  durationText?: string;
+}
+
+export interface HomeResponseDto {
+  categories: CategoryDto[];
+  featuredDestinations: PlaceSummaryDto[];
+  homestays: PlaceSummaryDto[];
+  featuredTours: PlaceSummaryDto[];
+  specialties?: PlaceSummaryDto[];
+}

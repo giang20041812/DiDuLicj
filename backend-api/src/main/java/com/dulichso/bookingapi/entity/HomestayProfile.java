@@ -1,0 +1,51 @@
+package com.dulichso.bookingapi.entity;
+import jakarta.persistence.*;
+import lombok.*;
+import java.time.LocalTime;
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "homestay_profile")
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class HomestayProfile {
+    @Id
+    private Long placeId;
+    
+    @OneToOne(fetch = FetchType.LAZY)
+    @MapsId
+    @JoinColumn(name = "place_id")
+    private Place place;
+    
+    @Column(name = "check_in_from")
+    private LocalTime checkInFrom;
+    @Column(name = "check_out_until")
+    private LocalTime checkOutUntil;
+    /** Khung giờ NCC xử lý đơn (BOOK-BR-11). NULL = mặc định 05:00 - 21:00, xem ResponseDeadlineCalculator. */
+    @Column(name = "processing_start_time")
+    private LocalTime processingStartTime;
+    @Column(name = "processing_end_time")
+    private LocalTime processingEndTime;
+    @Column(name = "house_rules", columnDefinition = "TEXT")
+    private String houseRules;
+    @Column(name = "surcharge_note", columnDefinition = "TEXT")
+    private String surchargeNote;
+    @Column(name="children_policy",columnDefinition="TEXT") private String childrenPolicy;
+    @Column(name="pets_policy",columnDefinition="TEXT") private String petsPolicy;
+
+    @Column(name = "view_highlight", columnDefinition = "TEXT")
+    private String viewHighlight;
+    /** Nhóm khách phù hợp (cột "Phù hợp nhóm khách nào" trong dữ liệu đã xác thực). */
+    @Column(name = "suitability", columnDefinition = "TEXT")
+    private String suitability;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "current_policy_id")
+    private CancellationPolicy currentPolicy;
+    
+    @Column(name = "updated_at", nullable = false)
+    @Builder.Default
+    private LocalDateTime updatedAt = LocalDateTime.now();
+    
+    @PreUpdate
+    protected void onUpdate() { updatedAt = LocalDateTime.now(); }
+}

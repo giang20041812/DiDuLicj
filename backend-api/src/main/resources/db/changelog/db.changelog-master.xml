@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.24.xsd">
+
+    <!-- Thêm cột cover image và location cho festival -->
+    <include file="db/changelog/changes/001-add-festival-cover-image-and-location.xml"/>
+    <include file="db/changelog/changes/002-add-suitable-by-time-and-booking-services.xml"/>
+    <include file="db/changelog/changes/003-add-suitable-dates.xml"/>
+
+    <!-- Module SOS cứu hộ: emergency_contact, sos_request -->
+    <include file="db/changelog/changes/002-add-sos-module.xml"/>
+
+    <!-- Module Tài chính & Affiliate: affiliate_link, commission_ledger -->
+    <include file="db/changelog/changes/003-add-finance-module.xml"/>
+
+    <!-- Tài khoản khách du lịch: traveler -->
+    <include file="db/changelog/changes/004-add-traveler.xml"/>
+    <include file="db/changelog/changes/005-add-traveler-status.xml"/>
+
+    <!-- Yêu cầu thay đổi đặt phòng -->
+    <include file="db/changelog/changes/006-add-booking-change-request.xml"/>
+
+    <!-- Giám sát Booking: ghi chú xác minh / kết quả của Admin -->
+    <include file="db/changelog/changes/006-add-booking-admin-note.xml"/>
+
+    <!-- Quên mật khẩu: OTP qua email -->
+    <include file="db/changelog/changes/007-add-password-reset-token.xml"/>
+
+
+    <!-- Module NCC: phòng/giá/lịch, dịch vụ & chính sách, xử lý đơn, ảnh, phản hồi đánh giá, đăng ký NCC -->
+    <include file="db/changelog/changes/006-partner-room-view.xml"/>
+    <include file="db/changelog/changes/007-homestay-services-policies.xml"/>
+    <include file="db/changelog/changes/008-booking-feedback-reviews-provider-applications.xml"/>
+    <include file="db/changelog/changes/009-add-weekend-price.xml"/>
+    <include file="db/changelog/changes/010-add-images-to-review.xml"/>
+    <include file="db/changelog/changes/010-room-inventory-block-reason.xml"/>
+
+    <!-- Bảo mật phiên và Audit Log: token_version, last_activity_at, audit_log.result/ip -->
+    <include file="db/changelog/changes/011-security-session-audit.xml"/>
+
+    <!-- Yêu cầu thay đổi Homestay/phòng/giá của NCC chờ Admin duyệt -->
+    <include file="db/changelog/changes/012-partner-change-request.xml"/>
+
+    <!-- Index cho tra cứu Booking / báo cáo / dòng tiền theo thời gian -->
+    <include file="db/changelog/changes/013-report-performance-indexes.xml"/>
+
+    <!-- Kiểm duyệt đánh giá: trạng thái REMOVED + người/lý do xử lý -->
+    <include file="db/changelog/changes/014-review-moderation.xml"/>
+
+    <!-- Mẫu thông báo: hủy đơn do khóa NCC (ACC-BR-08), gỡ đánh giá báo khách (REV-BR-17) -->
+    <include file="db/changelog/changes/015-notification-templates-admin.xml"/>
+    <include file="db/changelog/changes/016-admin-level-and-admin-notifications.xml"/>
+
+    <!-- Khung giờ xử lý đơn do NCC tự chọn cho từng Homestay (BOOK-BR-11) -->
+    <include file="db/changelog/changes/016-homestay-processing-hours.xml"/>
+
+    <!-- Hạn phản hồi 120 phút đã chốt, đơn hết hạn, kết quả đánh giá khả năng đáp ứng (UC-NCC-06/07/08) -->
+    <include file="db/changelog/changes/017-ncc-booking-deadline-evaluation.xml"/>
+    <include file="db/changelog/changes/018-add-place-needs.xml"/>
+    <include file="db/changelog/changes/019-adjust-homestay-fields.xml"/>
+    <include file="db/changelog/changes/020-add-google-map-link-to-place.xml"/>
+
+    <!-- Đối chiếu DATA ĐÃ XÁC THỰC: suitability thay guest_policy, Google Maps về place_contact, bỏ master_place_id -->
+    <include file="db/changelog/changes/021-align-homestay-with-verified-data.xml"/>
+    <include file="db/changelog/changes/022-complete-festival-content.xml"/>
+</databaseChangeLog>

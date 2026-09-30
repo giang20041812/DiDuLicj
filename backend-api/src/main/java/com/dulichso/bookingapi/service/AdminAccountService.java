@@ -1,0 +1,405 @@
+package com.dulichso.bookingapi.service;
+
+import com.dulichso.bookingapi.dto.admin.AdminAccountDtos.*;
+import com.dulichso.bookingapi.entity.Account;
+import com.dulichso.bookingapi.entity.enums.AccountRole;
+import com.dulichso.bookingapi.entity.enums.AccountStatus;
+import com.dulichso.bookingapi.repository.AccountRepository;
+import com.dulichso.bookingapi.security.UserPrincipal;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Map;
+import java.util.Objects;
+
+@Service
+public class AdminAccountService {
+
+    private final AccountRepository accountRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final AuditLogService auditLogService;
+    private final com.dulichso.bookingapi.repository.ProviderRepository providerRepository;
+    private final BookingImpactService bookingImpactService;
+    private final ProviderLockCascadeService legacyProviderLockCascadeService;
+
+    public AdminAccountService(AccountRepository accountRepository,
+                               PasswordEncoder passwordEncoder,
+                               AuditLogService auditLogService,
+                               com.dulichso.bookingapi.repository.ProviderRepository providerRepository,
+                               BookingImpactService bookingImpactService) {
+        this.accountRepository = accountRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.auditLogService = auditLogService;
+        this.providerRepository = providerRepository;
+        this.bookingImpactService = bookingImpactService;
+        this.legacyProviderLockCascadeService = null;
+    }
+
+    /** Compatibility constructor for unit tests and callers using the pre-refactor cascade service. */
+    @Autowired
+    public AdminAccountService(AccountRepository accountRepository,
+                               PasswordEncoder passwordEncoder,
+                               AuditLogService auditLogService,
+                               com.dulichso.bookingapi.repository.ProviderRepository providerRepository,
+                               ProviderLockCascadeService providerLockCascadeService) {
+        this.accountRepository = accountRepository;
+        this.passwordEncoder = passwordEncoder;
+        this.auditLogService = auditLogService;
+        this.providerRepository = providerRepository;
+        this.bookingImpactService = null;
+        this.legacyProviderLockCascadeService = providerLockCascadeService;
+    }
+
+    private static final java.util.Set<String> ACCOUNT_SORT_FIELDS = java.util.Set.of("createdAt", "lastLoginAt", "fullName", "email");
+
+    @Transactional(readOnly = true)
+    public org.springframework.data.domain.Page<AccountDto> getAccounts(
+            AccountRole role, AccountStatus status, String keyword,
+            com.dulichso.bookingapi.entity.enums.ProviderStatus providerStatus,
+            java.time.LocalDate createdFrom, java.time.LocalDate createdTo,
+            String sortBy, String sortDir, int page, int size) {
+
+        String kw = (keyword != null && !keyword.trim().isEmpty()) ? keyword.trim().toLowerCase() : null;
+        String sortField = ACCOUNT_SORT_FIELDS.contains(sortBy) ? sortBy : "createdAt";
+        org.springframework.data.domain.Sort sort = org.springframework.data.domain.Sort.by(
+                "asc".equalsIgnoreCase(sortDir)
+                        ? org.springframework.data.domain.Sort.Direction.ASC
+                        : org.springframework.data.domain.Sort.Direction.DESC,
+                sortField);
+        org.springframework.data.domain.Pageable pageable =
+                org.springframework.data.domain.PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100), sort);
+
+        org.springframework.data.jpa.domain.Specification<Account> spec = (root, query, cb) -> {
+            java.util.List<jakarta.persistence.criteria.Predicate> ps = new java.util.ArrayList<>();
+            jakarta.persistence.criteria.Join<Object, Object> provider = null;
+            if (query != null && query.getResultType() != Long.class && query.getResultType() != long.class) {
+                provider = (jakarta.persistence.criteria.Join<Object, Object>) (jakarta.persistence.criteria.Join<?, ?>)
+                        root.fetch("provider", jakarta.persistence.criteria.JoinType.LEFT);
+            } else if (providerStatus != null) {
+                provider = root.join("provider", jakarta.persistence.criteria.JoinType.LEFT);
+            }
+            if (role != null) ps.add(cb.equal(root.get("role"), role));
+            if (status != null) ps.add(cb.equal(root.get("status"), status));
+            if (providerStatus != null && provider != null) ps.add(cb.equal(provider.get("status"), providerStatus));
+            if (kw != null) {
+                String like = "%" + kw.replace("%", "\\%").replace("_", "\\_") + "%";
+                ps.add(cb.or(
+                        cb.like(cb.lower(root.get("fullName")), like),
+                        cb.like(cb.lower(root.get("email")), like),
+                        cb.like(root.get("phone"), like)));
+            }
+            if (createdFrom != null) ps.add(cb.greaterThanOrEqualTo(root.get("createdAt"), createdFrom.atStartOfDay()));
+            if (createdTo != null) ps.add(cb.lessThan(root.get("createdAt"), createdTo.plusDays(1).atStartOfDay()));
+            return cb.and(ps.toArray(new jakarta.persistence.criteria.Predicate[0]));
+        };
+        return accountRepository.findAll(spec, pageable).map(this::mapToDto);
+    }
+
+    @Transactional(readOnly = true)
+    public AccountDto getAccountById(Long id) {
+        Account account = accountRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy tài khoản với ID: " + id));
+        return mapToDto(account);
+    }
+
+    @Transactional
+    public AccountDto createAdminAccount(CreateAdminAccountRequest request, Long callerAccountId) {
+        if (accountRepository.existsByEmail(request.getEmail())) {
+            throw new IllegalArgumentException("Email " + request.getEmail() + " đã được sử dụng");
+        }
+        if (request.getPhone() != null && !request.getPhone().isBlank() && accountRepository.existsByPhone(request.getPhone())) {
+            throw new IllegalArgumentException("Số điện thoại " + request.getPhone() + " đã được sử dụng");
+        }
+
+        String encodedPassword = passwordEncoder.encode(request.getPassword());
+
+        // Không nêu cấp thì cấp thấp nhất (ít quyền nhất): cấp cao phải được gán chủ động.
+        int level = request.getAdminLevel() == null ? UserPrincipal.LOWEST_ADMIN_LEVEL : validLevel(request.getAdminLevel());
+
+        Account account = Account.builder()
+                .email(request.getEmail().trim().toLowerCase())
+                .phone(request.getPhone() != null ? request.getPhone().trim() : null)
+                .passwordHash(encodedPassword)
+                .fullName(request.getFullName().trim())
+                .role(AccountRole.ADMIN)
+                .adminLevel(level)
+                .status(AccountStatus.ACTIVE)
+                .build();
+
+        Account saved = accountRepository.save(account);
+
+        auditLogService.record(
+                callerAccountId,
+                "CREATE_ADMIN_ACCOUNT",
+                "Account",
+                saved.getId(),
+                "Tạo tài khoản quản trị viên mới: " + saved.getEmail() + " (cấp " + level + ")",
+                null,
+                Map.of("email", saved.getEmail(), "fullName", saved.getFullName(), "role", saved.getRole().name(), "adminLevel", level)
+        );
+
+        return mapToDto(saved);
+    }
+
+    @Transactional
+    public AccountDto updateAccount(Long id, UpdateAccountRequest request, Long callerAccountId) {
+        Account account = accountRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy tài khoản với ID: " + id));
+
+        Map<String, Object> before = Map.of(
+                "email", Objects.toString(account.getEmail(), ""),
+                "phone", Objects.toString(account.getPhone(), ""),
+                "fullName", Objects.toString(account.getFullName(), "")
+        );
+
+        if (request.getEmail() != null && !request.getEmail().isBlank()) {
+            String newEmail = request.getEmail().trim().toLowerCase();
+            if (!newEmail.equals(account.getEmail()) && accountRepository.existsByEmail(newEmail)) {
+                throw new IllegalArgumentException("Email " + newEmail + " đã được sử dụng");
+            }
+            account.setEmail(newEmail);
+        }
+
+        if (request.getPhone() != null && !request.getPhone().isBlank()) {
+            String newPhone = request.getPhone().trim();
+            if (!newPhone.equals(account.getPhone()) && accountRepository.existsByPhone(newPhone)) {
+                throw new IllegalArgumentException("Số điện thoại " + newPhone + " đã được sử dụng");
+            }
+            account.setPhone(newPhone);
+        }
+
+        if (request.getFullName() != null && !request.getFullName().isBlank()) {
+            account.setFullName(request.getFullName().trim());
+        }
+
+        Account saved = accountRepository.save(account);
+
+        auditLogService.record(
+                callerAccountId,
+                "UPDATE_ACCOUNT",
+                "Account",
+                saved.getId(),
+                "Cập nhật thông tin tài khoản",
+                before,
+                Map.of(
+                        "email", Objects.toString(saved.getEmail(), ""),
+                        "phone", Objects.toString(saved.getPhone(), ""),
+                        "fullName", Objects.toString(saved.getFullName(), "")
+                )
+        );
+
+        return mapToDto(saved);
+    }
+
+    @Transactional
+    public AccountDto updateAccountStatus(Long id, UpdateAccountStatusRequest request, Long callerAccountId) {
+        // Khóa ghi ngay khi đọc: 2 request đổi trạng thái cùng tài khoản gửi gần như đồng thời phải xử lý
+        // tuần tự, không được cùng đọc một trạng thái cũ rồi cùng ghi đè (double-submit).
+        Account account = accountRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy tài khoản với ID: " + id));
+        requireLevelOneForAdminTarget(account, callerAccountId);
+
+        // BV-08 / AGENTS.md: Chặn không thể tự khoá chính tài khoản đang đăng nhập
+        if (Objects.equals(callerAccountId, id) && request.getStatus() == AccountStatus.INACTIVE) {
+            throw new IllegalStateException("Bạn không thể tự vô hiệu hoá tài khoản của chính mình");
+        }
+
+        if (request.getStatus() == AccountStatus.INACTIVE
+                && (request.getReason() == null || request.getReason().isBlank())) {
+            throw new IllegalArgumentException("Vui lòng nhập lý do khi khóa tài khoản.");
+        }
+
+        AccountStatus oldStatus = account.getStatus();
+        boolean changed = oldStatus != request.getStatus();
+        account.setStatus(request.getStatus());
+        // NFR-SEC-03: đổi trạng thái là vô hiệu hóa mọi phiên đang có của tài khoản. Giữ nguyên trạng thái
+        // (request trùng trạng thái hiện có, ví dụ do double-submit) thì không thu hồi phiên hay chạy lại
+        // hệ quả khóa NCC bên dưới.
+        if (changed) account.setTokenVersion(account.getTokenVersion() + 1);
+        Account saved = accountRepository.save(account);
+
+        // ACC-BR-08/09: khóa tài khoản đăng nhập của NCC (PROVIDER, ACTIVE -> INACTIVE) phải tự động hủy các
+        // Booking đang chờ NCC duyệt (PENDING) của NCC đó và giải phóng phòng đang giữ — Booking đã xác nhận
+        // trở lên không bị đụng tới. Nhờ khóa ghi ở findByIdForUpdate phía trên, hai request khóa cùng tài
+        // khoản gần như đồng thời sẽ chạy tuần tự nên hệ quả này chỉ xảy ra đúng một lần (changed == true).
+        int cancelledBookings = 0;
+        if (changed && saved.getRole() == AccountRole.PROVIDER && saved.getStatus() == AccountStatus.INACTIVE
+                && saved.getProvider() != null) {
+            if (bookingImpactService != null) {
+                cancelledBookings = bookingImpactService.cancelForProvider(saved.getProvider().getId(),
+                        "Tài khoản nhà cung cấp bị khóa: " + request.getReason().trim());
+            } else {
+                cancelledBookings = legacyProviderLockCascadeService.cancelPendingBookings(saved.getProvider());
+            }
+        }
+
+        java.util.Map<String, Object> after = new java.util.HashMap<>();
+        after.put("status", saved.getStatus().name());
+        if (cancelledBookings > 0) after.put("cancelledPendingBookings", cancelledBookings);
+
+        auditLogService.record(
+                callerAccountId,
+                "UPDATE_ACCOUNT_STATUS",
+                "Account",
+                saved.getId(),
+                request.getReason() != null ? request.getReason() : "Thay đổi trạng thái tài khoản",
+                Map.of("status", oldStatus.name()),
+                after
+        );
+
+        return mapToDto(saved);
+    }
+
+    /**
+     * FR-AD-05: đổi quyền ADMIN ⇄ PROVIDER, có hiệu lực ngay (phiên cũ bị thu hồi), bắt buộc lý do và ghi audit.
+     * Không tự đổi quyền của chính mình, không hạ quyền Admin đang hoạt động cuối cùng.
+     */
+    @Transactional
+    public AccountDto updateAccountRole(Long id, UpdateAccountRoleRequest request, Long callerAccountId) {
+        // Khóa ghi ngay khi đọc — cùng lý do với updateAccountStatus: chống 2 request đổi quyền cùng tài
+        // khoản chạy chồng nhau làm sai điều kiện "không hạ quyền Admin cuối cùng".
+        Account account = accountRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy tài khoản với ID: " + id));
+        if (Objects.equals(callerAccountId, id)) {
+            throw new IllegalStateException("Bạn không thể tự đổi quyền của chính mình");
+        }
+        if (request.getReason() == null || request.getReason().isBlank()) {
+            throw new IllegalArgumentException("Vui lòng nhập lý do đổi quyền.");
+        }
+        AccountRole oldRole = account.getRole();
+        AccountRole newRole = request.getRole();
+        if (oldRole == newRole) {
+            throw new IllegalArgumentException("Tài khoản đã có quyền " + newRole.name() + ".");
+        }
+        // Luôn còn ít nhất một quản trị viên đang hoạt động: chặn hạ quyền Admin cuối cùng.
+        if (oldRole == AccountRole.ADMIN && account.getStatus() == AccountStatus.ACTIVE
+                && accountRepository.countByRoleAndStatus(AccountRole.ADMIN, AccountStatus.ACTIVE) <= 1) {
+            throw new IllegalStateException("Không thể hạ quyền quản trị viên đang hoạt động cuối cùng.");
+        }
+        Map<String, Object> before = Map.of("role", oldRole.name(),
+                "providerId", account.getProvider() != null ? account.getProvider().getId() : 0L);
+        Long newProviderId = null;
+        if (newRole == AccountRole.PROVIDER) {
+            if (request.getProviderId() == null) {
+                throw new IllegalArgumentException("Vui lòng chọn nhà cung cấp cho tài khoản.");
+            }
+            com.dulichso.bookingapi.entity.Provider provider = providerRepository.findById(request.getProviderId())
+                    .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy đối tác NCC với ID: " + request.getProviderId()));
+            if (!accountRepository.findByProviderIdOrderByIdAsc(provider.getId()).isEmpty()) {
+                throw new IllegalStateException("Nhà cung cấp này đã có tài khoản đăng nhập.");
+            }
+            account.setProvider(provider);
+            newProviderId = provider.getId();
+        } else {
+            account.setProvider(null);
+        }
+        account.setRole(newRole);
+        // Nâng lên ADMIN: mặc định cấp thấp nhất (cấp cao phải được gán riêng); chuyển sang PROVIDER: bỏ cấp.
+        account.setAdminLevel(newRole == AccountRole.ADMIN ? UserPrincipal.LOWEST_ADMIN_LEVEL : null);
+        // NFR-SEC-03: đổi quyền có hiệu lực ngay, mọi phiên đang có bị thu hồi.
+        account.setTokenVersion(account.getTokenVersion() + 1);
+        Account saved = accountRepository.save(account);
+
+        auditLogService.record(callerAccountId, "UPDATE_ACCOUNT_ROLE", "Account", saved.getId(), request.getReason().trim(),
+                before, Map.of("role", newRole.name(), "providerId", newProviderId != null ? newProviderId : 0L));
+        return mapToDto(saved);
+    }
+
+    @Transactional
+    public void resetPassword(Long id, ResetPasswordRequest request, Long callerAccountId) {
+        Account account = accountRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy tài khoản với ID: " + id));
+        requireLevelOneForAdminTarget(account, callerAccountId);
+
+        account.setPasswordHash(passwordEncoder.encode(request.getNewPassword()));
+        // NFR-SEC-03: đặt lại mật khẩu thu hồi các phiên cũ.
+        account.setTokenVersion(account.getTokenVersion() + 1);
+        accountRepository.save(account);
+
+        auditLogService.record(
+                callerAccountId,
+                "RESET_PASSWORD",
+                "Account",
+                account.getId(),
+                request.getReason() != null ? request.getReason() : "Admin đặt lại mật khẩu cho tài khoản",
+                null,
+                Map.of("email", Objects.toString(account.getEmail(), ""))
+        );
+    }
+
+    /** Thông tin (gồm cấp quản trị) của chính người đang đăng nhập — giao diện dùng để ẩn/hiện chức năng theo cấp. */
+    @Transactional(readOnly = true)
+    public AccountDto me(Long callerAccountId) {
+        if (callerAccountId == null) {
+            // Tài khoản QA mẫu không có trong DB: cấp 1.
+            return AccountDto.builder().role(AccountRole.ADMIN).status(AccountStatus.ACTIVE).adminLevel(1).fullName("Quản trị viên").build();
+        }
+        return mapToDto(accountRepository.findById(callerAccountId)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy tài khoản với ID: " + callerAccountId)));
+    }
+
+    /**
+     * Đổi cấp quản trị (chỉ cấp 1, do SecurityConfig chặn). Không tự đổi cấp của chính mình và luôn còn ít nhất một
+     * quản trị viên cấp 1 đang hoạt động để không ai bị khóa khỏi việc quản lý tài khoản.
+     */
+    @Transactional
+    public AccountDto updateAdminLevel(Long id, UpdateAdminLevelRequest request, Long callerAccountId) {
+        Account account = accountRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new IllegalArgumentException("Không tìm thấy tài khoản với ID: " + id));
+        if (account.getRole() != AccountRole.ADMIN) {
+            throw new IllegalArgumentException("Chỉ tài khoản quản trị viên mới có cấp quản trị.");
+        }
+        if (Objects.equals(callerAccountId, id)) {
+            throw new IllegalStateException("Bạn không thể tự đổi cấp của chính mình");
+        }
+        int newLevel = validLevel(request.getAdminLevel());
+        int oldLevel = account.effectiveAdminLevel();
+        if (oldLevel == newLevel) {
+            throw new IllegalArgumentException("Tài khoản đã ở cấp " + newLevel + ".");
+        }
+        if (oldLevel == 1 && account.getStatus() == AccountStatus.ACTIVE && accountRepository.countActiveLevelOneAdmins() <= 1) {
+            throw new IllegalStateException("Không thể hạ cấp quản trị viên cấp 1 đang hoạt động cuối cùng.");
+        }
+        account.setAdminLevel(newLevel);
+        Account saved = accountRepository.save(account);
+        auditLogService.record(callerAccountId, "UPDATE_ADMIN_LEVEL", "Account", saved.getId(),
+                request.getReason() != null && !request.getReason().isBlank() ? request.getReason().trim() : "Đổi cấp quản trị viên",
+                Map.of("adminLevel", oldLevel), Map.of("adminLevel", newLevel));
+        return mapToDto(saved);
+    }
+
+    private static int validLevel(Integer level) {
+        if (level == null || level < 1 || level > UserPrincipal.LOWEST_ADMIN_LEVEL) {
+            throw new IllegalArgumentException("Cấp quản trị không hợp lệ (chỉ từ 1 đến " + UserPrincipal.LOWEST_ADMIN_LEVEL + ").");
+        }
+        return level;
+    }
+
+    /** Cấp 2 không được khóa/mở khóa hay đặt lại mật khẩu của tài khoản Admin (tránh leo thang đặc quyền). */
+    private void requireLevelOneForAdminTarget(Account target, Long callerAccountId) {
+        if (target.getRole() != AccountRole.ADMIN || callerAccountId == null) return;
+        Integer callerLevel = accountRepository.findById(callerAccountId).map(Account::effectiveAdminLevel).orElse(1);
+        if (callerLevel == null || callerLevel != 1) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN,
+                    "Chỉ quản trị viên cấp 1 mới được thao tác trên tài khoản quản trị viên.");
+        }
+    }
+
+    private AccountDto mapToDto(Account a) {
+        return AccountDto.builder()
+                .id(a.getId())
+                .email(a.getEmail())
+                .phone(a.getPhone())
+                .fullName(a.getFullName())
+                .role(a.getRole())
+                .adminLevel(a.effectiveAdminLevel())
+                .status(a.getStatus())
+                .providerId(a.getProvider() != null ? a.getProvider().getId() : null)
+                .providerName(a.getProvider() != null ? a.getProvider().getName() : null)
+                .lastLoginAt(a.getLastLoginAt())
+                .createdAt(a.getCreatedAt())
+                .build();
+    }
+}

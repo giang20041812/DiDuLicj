@@ -1,0 +1,117 @@
+package com.dulichso.bookingapi.dto.admin;
+
+import com.dulichso.bookingapi.entity.enums.AccountRole;
+import com.dulichso.bookingapi.entity.enums.AccountStatus;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+
+public class AdminAccountDtos {
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class AccountDto {
+        private Long id;
+        private String email;
+        private String phone;
+        private String fullName;
+        private AccountRole role;
+        /** Cấp quản trị 1..3 (chỉ ADMIN; null với tài khoản khác). */
+        private Integer adminLevel;
+        private AccountStatus status;
+        private Long providerId;
+        private String providerName;
+        private LocalDateTime lastLoginAt;
+        private LocalDateTime createdAt;
+    }
+
+    /** Đổi cấp quản trị viên (chỉ cấp 1 được gọi). */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateAdminLevelRequest {
+        @NotNull(message = "Cấp quản trị không được để trống")
+        private Integer adminLevel;
+        @Size(max = 500, message = "Lý do tối đa 500 ký tự")
+        private String reason;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class CreateAdminAccountRequest {
+        @NotBlank(message = "Email không được để trống")
+        @Email(message = "Email không đúng định dạng")
+        private String email;
+
+        @NotBlank(message = "Số điện thoại không được để trống")
+        private String phone;
+
+        @NotBlank(message = "Mật khẩu không được để trống")
+        @Size(min = 6, message = "Mật khẩu tối thiểu 6 ký tự")
+        private String password;
+
+        @NotBlank(message = "Họ tên không được để trống")
+        private String fullName;
+
+        /** Cấp quản trị 1..3; không nêu thì cấp 3 (ít quyền nhất). */
+        private Integer adminLevel;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateAccountRequest {
+        @Email(message = "Email không đúng định dạng")
+        private String email;
+        private String phone;
+        private String fullName;
+    }
+
+    /** FR-AD-05: đổi quyền truy cập. Chuyển sang PROVIDER phải chỉ rõ NCC (mỗi NCC chỉ có một tài khoản). */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateAccountRoleRequest {
+        @NotNull(message = "Quyền mới không được để trống")
+        private AccountRole role;
+        private Long providerId;
+        @NotBlank(message = "Vui lòng nhập lý do đổi quyền")
+        @Size(max = 500, message = "Lý do tối đa 500 ký tự")
+        private String reason;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class UpdateAccountStatusRequest {
+        @NotNull(message = "Trạng thái không được để trống")
+        private AccountStatus status;
+        private String reason;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @Builder
+    public static class ResetPasswordRequest {
+        @NotBlank(message = "Mật khẩu mới không được để trống")
+        @Size(min = 6, message = "Mật khẩu mới tối thiểu 6 ký tự")
+        private String newPassword;
+        private String reason;
+    }
+}

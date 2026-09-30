@@ -1,0 +1,70 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Environments ###
+.env
+.env.*
+!.env.example
+!frontend-pwa/.env.production
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs & Temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+~$*
+
+# Compilation and runner artifacts
+cp.txt
+cpline.txt
+classpath.txt
+sources.txt
+java_sources.txt
+javac_opts.txt
+cp_arg.txt
+maven.zip
+mvn_temp/
+
+# Tunnel output files
+tunnel*.txt
+
+# Scripts temp
+**/scripts/tmp/
